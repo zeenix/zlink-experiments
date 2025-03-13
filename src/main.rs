@@ -8,11 +8,16 @@ struct Service<Impl> {
 
 impl<'service, Impl> Service<Impl>
 where
-    Impl: ServiceImpl<'service>,
+    Impl: ServiceImpl<'service> + 'service,
 {
-    async fn handle_next(&'service mut self) -> Result<(), ()> {
-        let call: Impl::MethodCall = serde_json::from_str("{ \"x\": 32 }").unwrap();
-        let _: Impl::Reply = self.service.handle(call).await;
+    async fn handle_next(mut self) -> Result<(), ()> {
+        loop {
+            //let service = unsafe { &mut *(self as *mut Self) };
+            //let service = &mut self;
+            let call: Impl::MethodCall =
+                serde_json::from_str(self.connection.read_json_from_socket()).unwrap();
+            let _: Impl::Reply = self.service.handle(call).await;
+        }
 
         Ok(())
     }
@@ -26,6 +31,12 @@ trait ServiceImpl<'service> {
 }
 
 pub struct Connection;
+
+impl Connection {
+    fn read_json_from_socket(&self) -> &str {
+        "{ \"x\": 32 }"
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Wizard {
