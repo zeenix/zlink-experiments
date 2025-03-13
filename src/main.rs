@@ -1,24 +1,39 @@
 use serde::{Deserialize, Serialize};
 use serde_json; // 1.0.138
 
-struct Service;
+struct Service<Impl> {
+    service: Impl,
+    connection: Connection,
+}
 
-impl Service {
-    async fn handle_next<'h, Handler, MethodCall, Reply>(
-        &'h mut self,
-        mut handler: Handler,
-    ) -> Result<(), ()>
+impl<Impl> Service<Impl>
+where
+    Impl: ServiceImpl,
+{
+    async fn handle_next<'s, MethodCall, Reply>(&'s mut self) -> Result<(), ()>
     where
-        Handler: AsyncFnMut(&'h mut Self, MethodCall) -> Reply,
-        MethodCall: Deserialize<'h>,
-        for<'r> Reply: Serialize + 'r,
+        MethodCall: Deserialize<'s>,
+        Reply: Serialize + 's,
     {
         let call: MethodCall = serde_json::from_str("{ \"x\": 32 }").unwrap();
-        let _: Reply = handler(self, call).await;
+        let _: Reply = self.service.handle(&self.connection, call).await;
 
         Ok(())
     }
 }
+
+trait ServiceImpl {
+    async fn handle<'s, 'c, MethodCall, Reply>(
+        &'s mut self,
+        conn: &'c Connection,
+        method: MethodCall,
+    ) -> Reply
+    where
+        MethodCall: Deserialize<'c>,
+        Reply: Serialize + 's;
+}
+
+pub struct Connection;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct Wizard {
@@ -30,9 +45,19 @@ impl Wizard {
     fn name(&self) -> &str {
         &self.name
     }
+}
 
-    async fn handle(&mut self, _service: &mut Service, _method: ()) -> &str {
-        &self.name
+impl ServiceImpl for Wizard {
+    async fn handle<'s, 'c, MethodCall, Reply>(
+        &'s mut self,
+        conn: &'c Connection,
+        method: MethodCall,
+    ) -> Reply
+    where
+        MethodCall: Deserialize<'c>,
+        Reply: Serialize + 's,
+    {
+        unimplemented!()
     }
 }
 
@@ -51,5 +76,5 @@ fn main() {
 
     let mut service = Service;
 
-    let _ = service.handle_next(async move |s, m| person.handle(s, m).await);
+    let _ = service.handle_next(async |s, m| person.handle(s, m).await);
 }
