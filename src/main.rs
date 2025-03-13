@@ -23,14 +23,10 @@ where
 }
 
 trait ServiceImpl {
-    async fn handle<'s, 'c, MethodCall, Reply>(
-        &'s mut self,
-        conn: &'c Connection,
-        method: MethodCall,
-    ) -> Reply
-    where
-        MethodCall: Deserialize<'c>,
-        Reply: Serialize + 's;
+    for<'de> type MethodCall: Deserialize<'de>;
+    for<'ser> type Reply: Serialize + ser;
+{
+    async fn handle(&'ser mut self, conn: &'de Connection, method: MethodCall) -> Reply;
 }
 
 pub struct Connection;
@@ -47,16 +43,12 @@ impl Wizard {
     }
 }
 
-impl ServiceImpl for Wizard {
-    async fn handle<'s, 'c, MethodCall, Reply>(
-        &'s mut self,
-        conn: &'c Connection,
-        method: MethodCall,
-    ) -> Reply
-    where
-        MethodCall: Deserialize<'c>,
-        Reply: Serialize + 's,
-    {
+impl ServiceImpl<(), &str> for Wizard {
+    async fn handle<'ser, 'de, M, R>(
+        &'ser mut self,
+        conn: &'de Connection,
+        method: (),
+    ) -> &'ser str {
         unimplemented!()
     }
 }
