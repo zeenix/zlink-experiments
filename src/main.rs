@@ -10,14 +10,19 @@ impl<'service, Impl> Service<Impl>
 where
     Impl: ServiceImpl<'service> + 'service,
 {
-    async fn handle_next(mut self) -> Result<(), ()> {
+    async fn run(mut self) {
         loop {
-            //let service = unsafe { &mut *(self as *mut Self) };
-            //let service = &mut self;
-            let call: Impl::MethodCall =
-                serde_json::from_str(self.connection.read_json_from_socket()).unwrap();
-            let _: Impl::Reply = self.service.handle(call).await;
+            let service = unsafe { &mut *(&mut self as *mut Self) };
+            if let Err(_) = service.handle_next().await {
+                break;
+            }
         }
+    }
+
+    async fn handle_next(&'service mut self) -> Result<(), ()> {
+        let call: Impl::MethodCall =
+            serde_json::from_str(self.connection.read_json_from_socket()).unwrap();
+        let _: Impl::Reply = self.service.handle(&self.connection, call).await;
 
         Ok(())
     }
@@ -25,9 +30,13 @@ where
 
 trait ServiceImpl<'service> {
     type MethodCall: Deserialize<'service>;
-    type Reply: Serialize + 'service;
+    type Reply: Serialize;
 
-    async fn handle(&'service mut self, method: Self::MethodCall) -> Self::Reply;
+    async fn handle(
+        &'service mut self,
+        connection: &'service Connection,
+        method: Self::MethodCall,
+    ) -> Self::Reply;
 }
 
 pub struct Connection;
@@ -51,10 +60,14 @@ impl Wizard {
 }
 
 impl<'service> ServiceImpl<'service> for Wizard {
-    type MethodCall = ();
+    type MethodCall = &'service str;
     type Reply = &'service str;
 
-    async fn handle(&'service mut self, _method: ()) -> &'service str {
+    async fn handle(
+        &'service mut self,
+        _connection: &'service Connection,
+        _method: &'service str,
+    ) -> &'service str {
         self.name()
     }
 }
@@ -73,10 +86,10 @@ async fn main() {
 
     println!("Deserialized struct: {person:?}");
 
-    let mut service = Service {
+    let service = Service {
         service: person,
         connection: Connection,
     };
 
-    let _ = service.handle_next().await;
+    let _ = service.run().await;
 }
