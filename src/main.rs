@@ -6,27 +6,23 @@ struct Service<Impl> {
     connection: Connection,
 }
 
-impl<Impl> Service<Impl>
+impl<'service, Impl> Service<Impl>
 where
-    Impl: ServiceImpl,
+    Impl: ServiceImpl<'service>,
 {
-    async fn handle_next<'s, MethodCall, Reply>(&'s mut self) -> Result<(), ()>
-    where
-        MethodCall: Deserialize<'s>,
-        Reply: Serialize + 's,
-    {
-        let call: MethodCall = serde_json::from_str("{ \"x\": 32 }").unwrap();
-        let _: Reply = self.service.handle(&self.connection, call).await;
+    async fn handle_next(&'service mut self) -> Result<(), ()> {
+        let call: Impl::MethodCall = serde_json::from_str("{ \"x\": 32 }").unwrap();
+        let _: Impl::Reply = self.service.handle(call).await;
 
         Ok(())
     }
 }
 
-trait ServiceImpl {
-    for<'de> type MethodCall: Deserialize<'de>;
-    for<'ser> type Reply: Serialize + ser;
-{
-    async fn handle(&'ser mut self, conn: &'de Connection, method: MethodCall) -> Reply;
+trait ServiceImpl<'service> {
+    type MethodCall: Deserialize<'service>;
+    type Reply: Serialize + 'service;
+
+    async fn handle(&'service mut self, method: Self::MethodCall) -> Self::Reply;
 }
 
 pub struct Connection;
@@ -43,17 +39,17 @@ impl Wizard {
     }
 }
 
-impl ServiceImpl<(), &str> for Wizard {
-    async fn handle<'ser, 'de, M, R>(
-        &'ser mut self,
-        conn: &'de Connection,
-        method: (),
-    ) -> &'ser str {
-        unimplemented!()
+impl<'service> ServiceImpl<'service> for Wizard {
+    type MethodCall = ();
+    type Reply = &'service str;
+
+    async fn handle(&'service mut self, _method: ()) -> &'service str {
+        self.name()
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let data = r#"
         {
             "name": "Harry Potter",
@@ -62,11 +58,14 @@ fn main() {
         }
     "#;
 
-    let mut person = serde_json::from_str::<Wizard>(data).expect("Failed to deserialize JSON");
+    let person = serde_json::from_str::<Wizard>(data).expect("Failed to deserialize JSON");
 
     println!("Deserialized struct: {person:?}");
 
-    let mut service = Service;
+    let mut service = Service {
+        service: person,
+        connection: Connection,
+    };
 
-    let _ = service.handle_next(async |s, m| person.handle(s, m).await);
+    let _ = service.handle_next().await;
 }
