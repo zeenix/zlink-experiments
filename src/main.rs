@@ -1,40 +1,46 @@
 use serde::{Deserialize, Serialize};
 use serde_json; // 1.0.138
 
-struct Service<Impl> {
-    service: Impl,
+struct Service {
     connection: Connection,
 }
 
-impl<'service, Impl> Service<Impl>
-where
-    Impl: ServiceImpl<'service> + 'service,
-{
-    async fn run(mut self) {
+impl Service {
+    async fn run<'ser, Impl>(mut self, service_impl: &'ser mut Impl)
+    where
+        for<'de> Impl: ServiceImpl<'de, 'ser>,
+    {
         loop {
             let service = unsafe { &mut *(&mut self as *mut Self) };
-            if let Err(_) = service.handle_next().await {
+            let service_impl = unsafe { &mut *(service_impl as *mut Impl) };
+            if let Err(_) = service.handle_next(service_impl).await {
                 break;
             }
         }
     }
 
-    async fn handle_next(&'service mut self) -> Result<(), ()> {
+    async fn handle_next<'de, 'ser, Impl>(
+        &'de mut self,
+        service_impl: &'ser mut Impl,
+    ) -> Result<(), ()>
+    where
+        Impl: ServiceImpl<'de, 'ser>,
+    {
         let call: Impl::MethodCall =
             serde_json::from_str(self.connection.read_json_from_socket()).unwrap();
-        let _: Impl::Reply = self.service.handle(&self.connection, call).await;
+        let _: Impl::Reply = service_impl.handle(&self.connection, call).await;
 
         Ok(())
     }
 }
 
-trait ServiceImpl<'service> {
-    type MethodCall: Deserialize<'service>;
-    type Reply: Serialize;
+trait ServiceImpl<'de, 'ser> {
+    type MethodCall: Deserialize<'de>;
+    type Reply: Serialize + 'ser;
 
     async fn handle(
-        &'service mut self,
-        connection: &'service Connection,
+        &'ser mut self,
+        connection: &'de Connection,
         method: Self::MethodCall,
     ) -> Self::Reply;
 }
@@ -59,15 +65,15 @@ impl Wizard {
     }
 }
 
-impl<'service> ServiceImpl<'service> for Wizard {
-    type MethodCall = &'service str;
-    type Reply = &'service str;
+impl<'de, 'ser> ServiceImpl<'de, 'ser> for Wizard {
+    type MethodCall = String;
+    type Reply = &'ser str;
 
     async fn handle(
-        &'service mut self,
-        _connection: &'service Connection,
-        _method: &'service str,
-    ) -> &'service str {
+        &'ser mut self,
+        _connection: &'de Connection,
+        _method: Self::MethodCall,
+    ) -> Self::Reply {
         self.name()
     }
 }
@@ -82,14 +88,13 @@ async fn main() {
         }
     "#;
 
-    let person = serde_json::from_str::<Wizard>(data).expect("Failed to deserialize JSON");
+    let mut person = serde_json::from_str::<Wizard>(data).expect("Failed to deserialize JSON");
 
     println!("Deserialized struct: {person:?}");
 
     let service = Service {
-        service: person,
         connection: Connection,
     };
 
-    let _ = service.run().await;
+    let _ = service.run(&mut person).await;
 }
