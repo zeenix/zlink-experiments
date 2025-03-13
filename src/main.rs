@@ -11,9 +11,9 @@ impl Service {
         for<'de> Impl: ServiceImpl<'de, 'ser>,
     {
         loop {
-            let service = unsafe { &mut *(&mut self as *mut Self) };
+            // Safety: TODO:
             let service_impl = unsafe { &mut *(service_impl as *mut Impl) };
-            if let Err(_) = service.handle_next(service_impl).await {
+            if let Err(_) = self.handle_next(service_impl).await {
                 break;
             }
         }
