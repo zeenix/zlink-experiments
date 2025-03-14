@@ -4,7 +4,7 @@ use serde_json; // 1.0.138
 struct Server;
 
 impl Server {
-    async fn run<Srv>(self, mut service_impl: Srv)
+    async fn run<Srv>(&mut self, mut service_impl: Srv)
     where
         for<'de, 'ser> Srv: Service<'de, 'ser>,
     {
@@ -79,7 +79,7 @@ async fn main() {
 
     println!("Deserialized struct: {person:?}");
 
-    let service = Server;
+    let mut service = Server;
 
     let _ = service.run(person).await;
 }
