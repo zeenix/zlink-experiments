@@ -1,40 +1,40 @@
 use serde::{Deserialize, Serialize};
 use serde_json; // 1.0.138
 
-struct Service {
+struct Server {
     connection: Connection,
 }
 
-impl Service {
-    async fn run<'ser, Impl>(mut self, service_impl: &'ser mut Impl)
+impl Server {
+    async fn run<Srv>(mut self, mut service_impl: Srv)
     where
-        for<'de> Impl: ServiceImpl<'de, 'ser>,
+        for<'de, 'ser> Srv: Service<'de, 'ser>,
     {
         loop {
             // Safety: TODO:
-            let service_impl = unsafe { &mut *(service_impl as *mut Impl) };
+            let service_impl = unsafe { &mut *(&mut service_impl as *mut Srv) };
             if let Err(_) = self.handle_next(service_impl).await {
                 break;
             }
         }
     }
 
-    async fn handle_next<'de, 'ser, Impl>(
+    async fn handle_next<'de, 'ser, Srv>(
         &'de mut self,
-        service_impl: &'ser mut Impl,
+        service_impl: &'ser mut Srv,
     ) -> Result<(), ()>
     where
-        Impl: ServiceImpl<'de, 'ser>,
+        Srv: Service<'de, 'ser>,
     {
-        let call: Impl::MethodCall =
+        let call: Srv::MethodCall =
             serde_json::from_str(self.connection.read_json_from_socket()).unwrap();
-        let _: Impl::Reply = service_impl.handle(&self.connection, call).await;
+        let _: Srv::Reply = service_impl.handle(&self.connection, call).await;
 
         Ok(())
     }
 }
 
-trait ServiceImpl<'de, 'ser> {
+trait Service<'de, 'ser> {
     type MethodCall: Deserialize<'de>;
     type Reply: Serialize + 'ser;
 
@@ -65,7 +65,7 @@ impl Wizard {
     }
 }
 
-impl<'de, 'ser> ServiceImpl<'de, 'ser> for Wizard {
+impl<'de, 'ser> Service<'de, 'ser> for Wizard {
     type MethodCall = String;
     type Reply = &'ser str;
 
@@ -88,13 +88,13 @@ async fn main() {
         }
     "#;
 
-    let mut person = serde_json::from_str::<Wizard>(data).expect("Failed to deserialize JSON");
+    let person = serde_json::from_str::<Wizard>(data).expect("Failed to deserialize JSON");
 
     println!("Deserialized struct: {person:?}");
 
-    let service = Service {
+    let service = Server {
         connection: Connection,
     };
 
-    let _ = service.run(&mut person).await;
+    let _ = service.run(person).await;
 }
