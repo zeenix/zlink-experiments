@@ -1,36 +1,23 @@
 use serde::{Deserialize, Serialize};
 use serde_json; // 1.0.138
 
-struct Server {
-    connection: Connection,
-}
+struct Server;
 
 impl Server {
-    async fn run<Srv>(mut self, mut service_impl: Srv)
+    async fn run<Srv>(self, mut service_impl: Srv)
     where
         for<'de, 'ser> Srv: Service<'de, 'ser>,
     {
         loop {
+            // This will be create from listener.
+            let mut connection = Connection;
+
             // Safety: TODO:
             let service_impl = unsafe { &mut *(&mut service_impl as *mut Srv) };
-            if let Err(_) = self.handle_next(service_impl).await {
+            if let Err(_) = service_impl.handle_next(&mut connection).await {
                 break;
             }
         }
-    }
-
-    async fn handle_next<'de, 'ser, Srv>(
-        &'de mut self,
-        service_impl: &'ser mut Srv,
-    ) -> Result<(), ()>
-    where
-        Srv: Service<'de, 'ser>,
-    {
-        let call: Srv::MethodCall =
-            serde_json::from_str(self.connection.read_json_from_socket()).unwrap();
-        let _: Srv::Reply = service_impl.handle(&self.connection, call).await;
-
-        Ok(())
     }
 }
 
@@ -38,11 +25,15 @@ trait Service<'de, 'ser> {
     type MethodCall: Deserialize<'de>;
     type Reply: Serialize + 'ser;
 
-    async fn handle(
-        &'ser mut self,
-        connection: &'de Connection,
-        method: Self::MethodCall,
-    ) -> Self::Reply;
+    async fn handle(&'ser mut self, method: Self::MethodCall) -> Self::Reply;
+
+    async fn handle_next(&'ser mut self, connection: &'de mut Connection) -> Result<(), ()> {
+        let call: Self::MethodCall =
+            serde_json::from_str(connection.read_json_from_socket()).unwrap();
+        let _: Self::Reply = self.handle(call).await;
+
+        Ok(())
+    }
 }
 
 pub struct Connection;
@@ -66,14 +57,10 @@ impl Wizard {
 }
 
 impl<'de, 'ser> Service<'de, 'ser> for Wizard {
-    type MethodCall = String;
+    type MethodCall = &'de str;
     type Reply = &'ser str;
 
-    async fn handle(
-        &'ser mut self,
-        _connection: &'de Connection,
-        _method: Self::MethodCall,
-    ) -> Self::Reply {
+    async fn handle(&'ser mut self, _method: Self::MethodCall) -> Self::Reply {
         self.name()
     }
 }
@@ -92,9 +79,7 @@ async fn main() {
 
     println!("Deserialized struct: {person:?}");
 
-    let service = Server {
-        connection: Connection,
-    };
+    let service = Server;
 
     let _ = service.run(person).await;
 }
