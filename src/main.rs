@@ -9,7 +9,7 @@ impl Server {
         for<'de, 'ser> Srv: Service<'de, 'ser>,
     {
         loop {
-            // This will be create from listener.
+            // This will be created from listener.
             let mut connection = Connection;
 
             // Safety: TODO:
