@@ -1,3 +1,4 @@
+use futures_util::{Stream, stream::Empty};
 use serde::{Deserialize, Serialize};
 
 struct Server<L> {
@@ -8,42 +9,70 @@ impl<L> Server<L>
 where
     L: Listener,
 {
-    async fn run<Srv>(&mut self, mut service_impl: Srv)
+    async fn run<Srv>(&mut self, mut service: Srv)
     where
-        for<'de, 'ser> Srv: Service<'de, 'ser>,
+        for<'ser> Srv: Service,
+        for<'de, 'ser> <Srv as Service>::MethodCall<'de>: Deserialize<'de>,
     {
         let mut connection = self.listener.accept().await;
         loop {
             // Safety: TODO:
-            let service_impl = unsafe { &mut *(&mut service_impl as *mut Srv) };
-            if let Err(_) = service_impl.handle_next(&mut connection).await {
+            let service = unsafe { &mut *(&mut service as *mut Srv) };
+            if let Err(_) = service.handle_next(&mut connection).await {
                 break;
             }
         }
     }
 }
 
-pub trait Service<'de, 'ser> {
-    type MethodCall: Deserialize<'de>;
-    type Reply: Serialize + 'ser;
+pub trait Service
+where
+    <Self::ReplyStream as Stream>::Item: Serialize,
+{
+    type MethodCall<'de>: Deserialize<'de>;
+    type Reply<'ser>: Serialize
+    where
+        Self: 'ser;
+    type ReplyStream: Stream;
 
-    fn handle(&'ser mut self, method: Self::MethodCall) -> impl Future<Output = Self::Reply>;
+    fn handle<'de, 'ser>(
+        &'ser mut self,
+        method: Self::MethodCall<'de>,
+    ) -> impl Future<Output = Reply<Self::Reply<'ser>, Self::ReplyStream>>;
 
-    fn handle_next<Sock>(
+    fn handle_next<'de, 'ser, Sock>(
         &'ser mut self,
         connection: &'de mut Connection<Sock>,
-    ) -> impl Future<Output = Result<(), ()>>
+    ) -> impl Future<Output = Result<Option<Self::ReplyStream>, ()>>
     where
         Sock: Socket,
     {
         async {
-            let json = connection.read_json_from_socket().await?;
-            let call: Self::MethodCall = serde_json::from_str(json).unwrap();
-            let _: Self::Reply = self.handle(call).await;
+            let reply = {
+                // Safety: The compiler doesn't know that we write to different fields
+                //         in `read` and `write` so doesn't like us borrowing it twice.
+                let connection = unsafe { &mut *(connection as *mut Connection<Sock>) };
+                let json = connection.read_json_from_socket().await?;
+                let call: Self::MethodCall<'de> = serde_json::from_str(json).unwrap();
+                self.handle(call).await
+            };
+            match reply {
+                Reply::Single(reply) => {
+                    let json = serde_json::to_string(&reply).unwrap();
+                    let _: usize = connection.write_json_to_socket(&json).await?;
 
-            Ok(())
+                    Ok(None)
+                }
+                Reply::Multi(stream) => Ok(Some(stream)),
+            }
         }
     }
+}
+
+#[derive(Debug)]
+pub enum Reply<R, ReplyStream> {
+    Single(R),
+    Multi(ReplyStream),
 }
 
 pub trait Listener {
@@ -83,6 +112,12 @@ where
         let json = std::str::from_utf8(&self.buf[..len]).unwrap();
         Ok(json)
     }
+
+    async fn write_json_to_socket(&mut self, json: &str) -> Result<usize, ()> {
+        println!("writing back the reply: {json}");
+        self.socket.write(json.as_bytes()).await?;
+        Ok(json.len())
+    }
 }
 
 pub enum SocketNext {
@@ -109,7 +144,7 @@ impl Socket for SocketNext {
             }
             SocketNext::TheEnd => return Err(()),
         };
-        buf.copy_from_slice(json.as_bytes());
+        (&mut buf[..json.len()]).copy_from_slice(json.as_bytes());
 
         Ok(json.len())
     }
@@ -131,19 +166,23 @@ impl Wizard {
     }
 }
 
-impl<'de, 'ser> Service<'de, 'ser> for Wizard {
-    type MethodCall = Methods<'de>;
-    type Reply = Replies<'ser>;
+impl Service for Wizard {
+    type MethodCall<'de> = Methods<'de>;
+    type Reply<'ser> = Replies<'ser>;
+    type ReplyStream = Empty<StreamedReplies>;
 
-    async fn handle(&'ser mut self, method: Self::MethodCall) -> Self::Reply {
+    async fn handle<'de, 'ser>(
+        &'ser mut self,
+        method: Self::MethodCall<'de>,
+    ) -> Reply<Self::Reply<'ser>, Self::ReplyStream> {
         println!("Handling method: {:?}", method);
         let ret = match method {
-            Methods::GetName => Replies::GetName { name: self.name() },
+            Methods::GetName => Reply::Single(Replies::GetName { name: self.name() }),
             Methods::SetName { name } => {
                 self.name = name.to_string();
-                Replies::SetName
+                Reply::Single(Replies::SetName)
             }
-            Methods::GetAge => Replies::GetAge { age: self.age },
+            Methods::GetAge => Reply::Single(Replies::GetAge { age: self.age }),
         };
         println!("Returning: {:?}", ret);
 
@@ -168,6 +207,12 @@ enum Replies<'r> {
     GetName { name: &'r str },
     SetName,
     GetAge { age: u8 },
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(untagged)]
+enum StreamedReplies {
+    Name { name: String },
 }
 
 #[tokio::main]
