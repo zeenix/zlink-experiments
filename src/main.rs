@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use serde_json; // 1.0.138
 
 struct Server<L> {
     listener: L,
