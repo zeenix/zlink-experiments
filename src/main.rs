@@ -1,4 +1,7 @@
-use futures_util::{Stream, stream::Empty};
+use futures_util::{
+    Stream, StreamExt, pin_mut,
+    stream::{Repeat, Take, repeat},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -19,8 +22,15 @@ where
         loop {
             // Safety: TODO:
             let service = unsafe { &mut *(&mut service as *mut Srv) };
-            if let Err(_) = service.handle_next(&mut connection).await {
-                break;
+            match service.handle_next(&mut connection).await {
+                Ok(Some(stream)) => {
+                    pin_mut!(stream);
+                    while let Some(r) = stream.next().await {
+                        println!("Streamed reply: {:?}", r);
+                    }
+                }
+                Ok(None) => (),
+                Err(_) => break,
             }
         }
     }
@@ -28,7 +38,7 @@ where
 
 pub trait Service
 where
-    <Self::ReplyStream as Stream>::Item: Serialize,
+    <Self::ReplyStream as Stream>::Item: Serialize + core::fmt::Debug,
 {
     type MethodCall<'de>: Deserialize<'de>;
     type ReplyParams<'ser>: Serialize
@@ -38,7 +48,7 @@ where
 
     fn handle<'de, 'ser>(
         &'ser mut self,
-        method: Self::MethodCall<'de>,
+        method: Call<Self::MethodCall<'de>>,
     ) -> impl Future<Output = Reply<Option<Self::ReplyParams<'ser>>, Self::ReplyStream>>;
 
     fn handle_next<'de, 'ser, Sock>(
@@ -54,7 +64,7 @@ where
                 //         in `read` and `write` so doesn't like us borrowing it twice.
                 let connection = unsafe { &mut *(connection as *mut Connection<Sock>) };
                 let json = connection.read_json_from_socket().await?;
-                let call: Self::MethodCall<'de> = serde_json::from_str(json).unwrap();
+                let call: Call<Self::MethodCall<'de>> = serde_json::from_str(json).unwrap();
                 self.handle(call).await
             };
             match reply {
@@ -72,6 +82,14 @@ where
             }
         }
     }
+}
+/// A method call.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Call<M> {
+    #[serde(flatten)]
+    method: M,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    more: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -129,6 +147,7 @@ pub enum SocketNext {
     GetName,
     SetName,
     GetAge,
+    GetNameStream,
     TheEnd,
 }
 
@@ -144,8 +163,12 @@ impl Socket for SocketNext {
                 r#"{"method":"org.zeenix.Person.SetName","params":{"name":"Saruman"}}"#
             }
             SocketNext::GetAge => {
-                *self = SocketNext::TheEnd;
+                *self = SocketNext::GetNameStream;
                 r#"{"method":"org.zeenix.Person.GetAge"}"#
+            }
+            SocketNext::GetNameStream => {
+                *self = SocketNext::TheEnd;
+                r#"{"method":"org.zeenix.Person.GetName","more":true}"#
             }
             SocketNext::TheEnd => return Err(()),
         };
@@ -174,15 +197,26 @@ impl Wizard {
 impl Service for Wizard {
     type MethodCall<'de> = Methods<'de>;
     type ReplyParams<'ser> = Replies<'ser>;
-    type ReplyStream = Empty<StreamedReplies>;
+    type ReplyStream = Take<Repeat<StreamedReplies>>;
 
     async fn handle<'de, 'ser>(
         &'ser mut self,
-        method: Self::MethodCall<'de>,
+        method: Call<Self::MethodCall<'de>>,
     ) -> Reply<Option<Self::ReplyParams<'ser>>, Self::ReplyStream> {
         println!("Handling method: {:?}", method);
-        let ret = match method {
-            Methods::GetName => Reply::Single(Some(Replies::GetName { name: self.name() })),
+        let ret = match method.method {
+            Methods::GetName => {
+                if method.more.unwrap_or(false) {
+                    Reply::Multi(
+                        repeat(StreamedReplies::Name {
+                            name: self.name.clone(),
+                        })
+                        .take(5),
+                    )
+                } else {
+                    Reply::Single(Some(Replies::GetName { name: self.name() }))
+                }
+            }
             Methods::SetName { name } => {
                 self.name = name.to_string();
                 Reply::Single(None)
