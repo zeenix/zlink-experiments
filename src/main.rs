@@ -1,5 +1,6 @@
 use futures_util::{Stream, stream::Empty};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 struct Server<L> {
     listener: L,
@@ -30,7 +31,7 @@ where
     <Self::ReplyStream as Stream>::Item: Serialize,
 {
     type MethodCall<'de>: Deserialize<'de>;
-    type Reply<'ser>: Serialize
+    type ReplyParams<'ser>: Serialize
     where
         Self: 'ser;
     type ReplyStream: Stream;
@@ -38,7 +39,7 @@ where
     fn handle<'de, 'ser>(
         &'ser mut self,
         method: Self::MethodCall<'de>,
-    ) -> impl Future<Output = Reply<Self::Reply<'ser>, Self::ReplyStream>>;
+    ) -> impl Future<Output = Reply<Option<Self::ReplyParams<'ser>>, Self::ReplyStream>>;
 
     fn handle_next<'de, 'ser, Sock>(
         &'ser mut self,
@@ -58,6 +59,10 @@ where
             };
             match reply {
                 Reply::Single(reply) => {
+                    let reply = match reply {
+                        Some(reply) => json!({"parameters": reply}),
+                        None => json!({}),
+                    };
                     let json = serde_json::to_string(&reply).unwrap();
                     let _: usize = connection.write_json_to_socket(&json).await?;
 
@@ -70,8 +75,8 @@ where
 }
 
 #[derive(Debug)]
-pub enum Reply<R, ReplyStream> {
-    Single(R),
+pub enum Reply<Params, ReplyStream> {
+    Single(Params),
     Multi(ReplyStream),
 }
 
@@ -168,21 +173,21 @@ impl Wizard {
 
 impl Service for Wizard {
     type MethodCall<'de> = Methods<'de>;
-    type Reply<'ser> = Replies<'ser>;
+    type ReplyParams<'ser> = Replies<'ser>;
     type ReplyStream = Empty<StreamedReplies>;
 
     async fn handle<'de, 'ser>(
         &'ser mut self,
         method: Self::MethodCall<'de>,
-    ) -> Reply<Self::Reply<'ser>, Self::ReplyStream> {
+    ) -> Reply<Option<Self::ReplyParams<'ser>>, Self::ReplyStream> {
         println!("Handling method: {:?}", method);
         let ret = match method {
-            Methods::GetName => Reply::Single(Replies::GetName { name: self.name() }),
+            Methods::GetName => Reply::Single(Some(Replies::GetName { name: self.name() })),
             Methods::SetName { name } => {
                 self.name = name.to_string();
-                Reply::Single(Replies::SetName)
+                Reply::Single(None)
             }
-            Methods::GetAge => Reply::Single(Replies::GetAge { age: self.age }),
+            Methods::GetAge => Reply::Single(Some(Replies::GetAge { age: self.age })),
         };
         println!("Returning: {:?}", ret);
 
@@ -205,7 +210,6 @@ enum Methods<'m> {
 #[serde(untagged)]
 enum Replies<'r> {
     GetName { name: &'r str },
-    SetName,
     GetAge { age: u8 },
 }
 
