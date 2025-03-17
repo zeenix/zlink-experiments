@@ -46,10 +46,10 @@ where
         Self: 'ser;
     type ReplyStream: Stream;
 
-    fn handle<'de, 'ser>(
-        &'ser mut self,
+    fn handle<'de>(
+        &mut self,
         method: Call<Self::MethodCall<'de>>,
-    ) -> impl Future<Output = Reply<Option<Self::ReplyParams<'ser>>, Self::ReplyStream>>;
+    ) -> impl Future<Output = Reply<Option<Self::ReplyParams<'_>>, Self::ReplyStream>>;
 
     fn handle_next<'de, 'ser, Sock>(
         &'ser mut self,
@@ -199,10 +199,10 @@ impl Service for Wizard {
     type ReplyParams<'ser> = Replies<'ser>;
     type ReplyStream = Take<Repeat<StreamedReplies>>;
 
-    async fn handle<'de, 'ser>(
-        &'ser mut self,
+    async fn handle<'de>(
+        &mut self,
         method: Call<Self::MethodCall<'de>>,
-    ) -> Reply<Option<Self::ReplyParams<'ser>>, Self::ReplyStream> {
+    ) -> Reply<Option<Self::ReplyParams<'_>>, Self::ReplyStream> {
         println!("Handling method: {:?}", method);
         let ret = match method.method {
             Methods::GetName => {
