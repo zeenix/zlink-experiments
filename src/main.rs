@@ -5,21 +5,20 @@ use futures_util::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-struct Server<L> {
-    listener: L,
+struct Server<Listen, Srv> {
+    listener: Listen,
+    service: Srv,
 }
 
-impl<L> Server<L>
+impl<Listen, Srv> Server<Listen, Srv>
 where
-    L: Listener,
+    Listen: Listener,
+    Srv: Service,
 {
-    async fn run<Srv>(&mut self, mut service: Srv)
-    where
-        Srv: Service,
-    {
+    async fn run(&mut self) {
         let mut connection = self.listener.accept().await;
         loop {
-            match service.handle_next(&mut connection).await {
+            match self.service.handle_next(&mut connection).await {
                 Ok(Some(stream)) => {
                     pin_mut!(stream);
                     while let Some(r) = stream.next().await {
@@ -278,7 +277,10 @@ async fn main() {
         age: 100,
     };
 
-    let mut service = Server { listener: () };
+    let mut service = Server {
+        listener: (),
+        service: person,
+    };
 
-    let _ = service.run(person).await;
+    let _ = service.run().await;
 }
