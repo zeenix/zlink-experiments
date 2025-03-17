@@ -45,11 +45,16 @@ where
     where
         Self: 'ser;
     type ReplyStream: Stream;
+    type ReplyError<'ser>: Serialize
+    where
+        Self: 'ser;
 
     fn handle<'de>(
         &mut self,
         method: Call<Self::MethodCall<'de>>,
-    ) -> impl Future<Output = Reply<Option<Self::ReplyParams<'_>>, Self::ReplyStream>>;
+    ) -> impl Future<
+        Output = Reply<Option<Self::ReplyParams<'_>>, Self::ReplyStream, Self::ReplyError<'_>>,
+    >;
 
     fn handle_next<'de, 'ser, Sock>(
         &'ser mut self,
@@ -78,6 +83,12 @@ where
 
                     Ok(None)
                 }
+                Reply::Error(err) => {
+                    let json = serde_json::to_string(&err).unwrap();
+                    let _: usize = connection.write_json_to_socket(&json).await?;
+
+                    Err(())
+                }
                 Reply::Multi(stream) => Ok(Some(stream)),
             }
         }
@@ -93,8 +104,9 @@ pub struct Call<M> {
 }
 
 #[derive(Debug)]
-pub enum Reply<Params, ReplyStream> {
+pub enum Reply<Params, ReplyStream, ReplyError> {
     Single(Params),
+    Error(ReplyError),
     Multi(ReplyStream),
 }
 
@@ -198,11 +210,12 @@ impl Service for Wizard {
     type MethodCall<'de> = Methods<'de>;
     type ReplyParams<'ser> = Replies<'ser>;
     type ReplyStream = Take<Repeat<StreamedReplies>>;
+    type ReplyError<'ser> = Errors;
 
     async fn handle<'de>(
         &mut self,
         method: Call<Self::MethodCall<'de>>,
-    ) -> Reply<Option<Self::ReplyParams<'_>>, Self::ReplyStream> {
+    ) -> Reply<Option<Self::ReplyParams<'_>>, Self::ReplyStream, Self::ReplyError<'_>> {
         println!("Handling method: {:?}", method);
         let ret = match method.method {
             Methods::GetName => {
@@ -222,6 +235,7 @@ impl Service for Wizard {
                 Reply::Single(None)
             }
             Methods::GetAge => Reply::Single(Some(Replies::GetAge { age: self.age })),
+            Methods::Fail => Reply::Error(Errors::NotFound),
         };
         println!("Returning: {:?}", ret);
 
@@ -238,6 +252,8 @@ enum Methods<'m> {
     SetName { name: &'m str },
     #[serde(rename = "org.zeenix.Person.GetAge")]
     GetAge,
+    #[serde(rename = "org.zeenix.Person.Fail")]
+    Fail,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -251,6 +267,11 @@ enum Replies<'r> {
 #[serde(untagged)]
 enum StreamedReplies {
     Name { name: String },
+}
+
+#[derive(Debug, Serialize)]
+enum Errors {
+    NotFound,
 }
 
 #[tokio::main]
