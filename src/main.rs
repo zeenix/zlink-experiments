@@ -15,13 +15,10 @@ where
 {
     async fn run<Srv>(&mut self, mut service: Srv)
     where
-        for<'ser> Srv: Service,
-        for<'de, 'ser> <Srv as Service>::MethodCall<'de>: Deserialize<'de>,
+        Srv: Service,
     {
         let mut connection = self.listener.accept().await;
         loop {
-            // Safety: TODO:
-            let service = unsafe { &mut *(&mut service as *mut Srv) };
             match service.handle_next(&mut connection).await {
                 Ok(Some(stream)) => {
                     pin_mut!(stream);
