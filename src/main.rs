@@ -45,13 +45,6 @@ where
     where
         Self: 'ser;
 
-    fn handle<'de>(
-        &mut self,
-        method: Call<Self::MethodCall<'de>>,
-    ) -> impl Future<
-        Output = Reply<Option<Self::ReplyParams<'_>>, Self::ReplyStream, Self::ReplyError<'_>>,
-    >;
-
     fn handle_next<'de, 'ser, Sock>(
         &'ser mut self,
         connection: &'de mut Connection<Sock>,
@@ -89,6 +82,13 @@ where
             }
         }
     }
+
+    fn handle<'de>(
+        &mut self,
+        method: Call<Self::MethodCall<'de>>,
+    ) -> impl Future<
+        Output = Reply<Option<Self::ReplyParams<'_>>, Self::ReplyStream, Self::ReplyError<'_>>,
+    >;
 }
 /// A method call.
 #[derive(Debug, Serialize, Deserialize)]
