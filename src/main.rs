@@ -16,9 +16,10 @@ where
     Srv: Service,
 {
     async fn run(&mut self) {
-        let mut connection = self.listener.accept().await;
+        // Wait for the first connection.
+        let (mut reader, mut writer) = self.listener.accept_next().await;
         loop {
-            match self.service.handle_next(&mut connection).await {
+            match self.service.handle_next(&mut reader, &mut writer).await {
                 Ok(Some(stream)) => {
                     pin_mut!(stream);
                     while let Some(r) = stream.next().await {
@@ -45,19 +46,18 @@ where
     where
         Self: 'ser;
 
-    fn handle_next<'de, 'ser, Sock>(
+    fn handle_next<'de, 'ser, Read, Write>(
         &'ser mut self,
-        connection: &'de mut Connection<Sock>,
+        read_conn: &'de mut Connection<Read>,
+        write_conn: &mut Connection<Write>,
     ) -> impl Future<Output = Result<Option<Self::ReplyStream>, ()>>
     where
-        Sock: Socket,
+        Read: SocketRead,
+        Write: SocketWrite,
     {
         async {
             let reply = {
-                // Safety: The compiler doesn't know that we write to different fields
-                //         in `read` and `write` so doesn't like us borrowing it twice.
-                let connection = unsafe { &mut *(connection as *mut Connection<Sock>) };
-                let json = connection.read_json_from_socket().await?;
+                let json = read_conn.read_json_from_socket().await?;
                 let call: Call<Self::MethodCall<'de>> = serde_json::from_str(json).unwrap();
                 self.handle(call).await
             };
@@ -68,13 +68,13 @@ where
                         None => json!({}),
                     };
                     let json = serde_json::to_string(&reply).unwrap();
-                    let _: usize = connection.write_json_to_socket(&json).await?;
+                    let _: usize = write_conn.write_json_to_socket(&json).await?;
 
                     Ok(None)
                 }
                 Reply::Error(err) => {
                     let json = serde_json::to_string(&err).unwrap();
-                    let _: usize = connection.write_json_to_socket(&json).await?;
+                    let _: usize = write_conn.write_json_to_socket(&json).await?;
 
                     Err(())
                 }
@@ -109,41 +109,77 @@ pub enum Reply<Params, ReplyStream, ReplyError> {
 pub trait Listener {
     type Socket: Socket;
 
-    fn accept(&mut self) -> impl Future<Output = Connection<Self::Socket>>;
+    fn accept_next(
+        &mut self,
+    ) -> impl Future<
+        Output = (
+            Connection<<Self::Socket as Socket>::Read>,
+            Connection<<Self::Socket as Socket>::Write>,
+        ),
+    > {
+        async {
+            let socket = self.accept().await;
+            let (read, write) = socket.split();
+            (
+                Connection {
+                    socket: read,
+                    buf: [0; 1024],
+                },
+                Connection {
+                    socket: write,
+                    buf: [0; 1024],
+                },
+            )
+        }
+    }
+
+    fn accept(&mut self) -> impl Future<Output = Self::Socket>;
 }
 
 // Thsi would be a `tokio::net::UnixListener`.
 impl Listener for () {
     type Socket = SocketNext;
 
-    async fn accept(&mut self) -> Connection<Self::Socket> {
-        Connection {
-            socket: SocketNext::GetName,
-            buf: [0; 1024],
-        }
+    async fn accept(&mut self) -> Self::Socket {
+        SocketNext::GetName
     }
 }
 
 pub trait Socket {
+    type Read: SocketRead;
+    type Write: SocketWrite;
+
+    fn split(self) -> (Self::Read, Self::Write);
+}
+
+pub trait SocketRead {
     fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, ()>>;
+}
+
+pub trait SocketWrite {
     fn write(&mut self, buf: &[u8]) -> impl Future<Output = Result<usize, ()>>;
 }
 
-pub struct Connection<Socket> {
-    socket: Socket,
+pub struct Connection<SocketHalf> {
+    socket: SocketHalf,
     buf: [u8; 1024],
 }
 
-impl<Sock> Connection<Sock>
+impl<Read> Connection<Read>
 where
-    Sock: Socket,
+    Read: SocketRead,
 {
     async fn read_json_from_socket(&mut self) -> Result<&str, ()> {
         let len = self.socket.read(&mut self.buf).await?;
         let json = std::str::from_utf8(&self.buf[..len]).unwrap();
         Ok(json)
     }
+}
 
+impl<Write> Connection<Write>
+where
+    Write: SocketWrite,
+{
     async fn write_json_to_socket(&mut self, json: &str) -> Result<usize, ()> {
         println!("writing back the reply: {json}");
         self.socket.write(json.as_bytes()).await?;
@@ -151,6 +187,7 @@ where
     }
 }
 
+#[derive(Debug, Copy, Clone)]
 pub enum SocketNext {
     GetName,
     SetName,
@@ -160,6 +197,15 @@ pub enum SocketNext {
 }
 
 impl Socket for SocketNext {
+    type Read = Self;
+    type Write = Self;
+
+    fn split(self) -> (Self::Read, Self::Write) {
+        (self, self)
+    }
+}
+
+impl SocketRead for SocketNext {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
         let json = match self {
             SocketNext::GetName => {
@@ -184,7 +230,9 @@ impl Socket for SocketNext {
 
         Ok(json.len())
     }
+}
 
+impl SocketWrite for SocketNext {
     async fn write(&mut self, _buf: &[u8]) -> Result<usize, ()> {
         Ok(0)
     }
