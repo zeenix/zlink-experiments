@@ -52,8 +52,8 @@ where
         write_conn: &mut Connection<Write>,
     ) -> impl Future<Output = Result<Option<Self::ReplyStream>, ()>>
     where
-        Read: SocketRead,
-        Write: SocketWrite,
+        Read: ReadHalf,
+        Write: WriteHalf,
     {
         async {
             let reply = {
@@ -113,8 +113,8 @@ pub trait Listener {
         &mut self,
     ) -> impl Future<
         Output = (
-            Connection<<Self::Socket as Socket>::Read>,
-            Connection<<Self::Socket as Socket>::Write>,
+            Connection<<Self::Socket as Socket>::ReadHalf>,
+            Connection<<Self::Socket as Socket>::WriteHalf>,
         ),
     > {
         async {
@@ -146,17 +146,17 @@ impl Listener for () {
 }
 
 pub trait Socket {
-    type Read: SocketRead;
-    type Write: SocketWrite;
+    type ReadHalf: ReadHalf;
+    type WriteHalf: WriteHalf;
 
-    fn split(self) -> (Self::Read, Self::Write);
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf);
 }
 
-pub trait SocketRead {
+pub trait ReadHalf {
     fn read(&mut self, buf: &mut [u8]) -> impl Future<Output = Result<usize, ()>>;
 }
 
-pub trait SocketWrite {
+pub trait WriteHalf {
     fn write(&mut self, buf: &[u8]) -> impl Future<Output = Result<usize, ()>>;
 }
 
@@ -167,7 +167,7 @@ pub struct Connection<SocketHalf> {
 
 impl<Read> Connection<Read>
 where
-    Read: SocketRead,
+    Read: ReadHalf,
 {
     async fn read_json_from_socket(&mut self) -> Result<&str, ()> {
         let len = self.socket.read(&mut self.buf).await?;
@@ -178,7 +178,7 @@ where
 
 impl<Write> Connection<Write>
 where
-    Write: SocketWrite,
+    Write: WriteHalf,
 {
     async fn write_json_to_socket(&mut self, json: &str) -> Result<usize, ()> {
         println!("writing back the reply: {json}");
@@ -197,15 +197,15 @@ pub enum SocketNext {
 }
 
 impl Socket for SocketNext {
-    type Read = Self;
-    type Write = Self;
+    type ReadHalf = Self;
+    type WriteHalf = Self;
 
-    fn split(self) -> (Self::Read, Self::Write) {
+    fn split(self) -> (Self::ReadHalf, Self::WriteHalf) {
         (self, self)
     }
 }
 
-impl SocketRead for SocketNext {
+impl ReadHalf for SocketNext {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, ()> {
         let json = match self {
             SocketNext::GetName => {
@@ -232,7 +232,7 @@ impl SocketRead for SocketNext {
     }
 }
 
-impl SocketWrite for SocketNext {
+impl WriteHalf for SocketNext {
     async fn write(&mut self, _buf: &[u8]) -> Result<usize, ()> {
         Ok(0)
     }
