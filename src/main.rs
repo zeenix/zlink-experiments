@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::atomic::AtomicUsize};
+
 use futures_util::{
     Stream, StreamExt, pin_mut,
     stream::{Repeat, Take, repeat},
@@ -16,10 +18,17 @@ where
     Srv: Service,
 {
     async fn run(&mut self) {
+        let mut write_conn_map = HashMap::new();
+
         // Wait for the first connection.
-        let (mut reader, mut writer) = self.listener.accept_next().await;
+        let (mut reader, writer) = self.listener.accept_next().await;
+        write_conn_map.insert(writer.id, writer);
         loop {
-            match self.service.handle_next(&mut reader, &mut writer).await {
+            match self
+                .service
+                .handle_next(&mut reader, &mut write_conn_map)
+                .await
+            {
                 Ok(Some(stream)) => {
                     pin_mut!(stream);
                     while let Some(r) = stream.next().await {
@@ -49,17 +58,18 @@ where
     fn handle_next<'de, 'ser, Read, Write>(
         &'ser mut self,
         read_conn: &'de mut Connection<Read>,
-        write_conn: &mut Connection<Write>,
+        write_conn_map: &mut HashMap<usize, Connection<Write>>,
     ) -> impl Future<Output = Result<Option<Self::ReplyStream>, ()>>
     where
         Read: ReadHalf,
         Write: WriteHalf,
     {
         async {
-            let reply = {
+            let (reply, id) = {
+                let id = read_conn.id;
                 let json = read_conn.read_json_from_socket().await?;
                 let call: Call<Self::MethodCall<'de>> = serde_json::from_str(json).unwrap();
-                self.handle(call).await
+                (self.handle(call).await, id)
             };
             match reply {
                 Reply::Single(reply) => {
@@ -68,13 +78,21 @@ where
                         None => json!({}),
                     };
                     let json = serde_json::to_string(&reply).unwrap();
-                    let _: usize = write_conn.write_json_to_socket(&json).await?;
+                    let _: usize = write_conn_map
+                        .get_mut(&id)
+                        .unwrap()
+                        .write_json_to_socket(&json)
+                        .await?;
 
                     Ok(None)
                 }
                 Reply::Error(err) => {
                     let json = serde_json::to_string(&err).unwrap();
-                    let _: usize = write_conn.write_json_to_socket(&json).await?;
+                    let _: usize = write_conn_map
+                        .get_mut(&id)
+                        .unwrap()
+                        .write_json_to_socket(&json)
+                        .await?;
 
                     Err(())
                 }
@@ -120,14 +138,17 @@ pub trait Listener {
         async {
             let socket = self.accept().await;
             let (read, write) = socket.split();
+            let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             (
                 Connection {
                     socket: read,
                     buf: [0; 1024],
+                    id,
                 },
                 Connection {
                     socket: write,
                     buf: [0; 1024],
+                    id,
                 },
             )
         }
@@ -163,6 +184,7 @@ pub trait WriteHalf {
 pub struct Connection<SocketHalf> {
     socket: SocketHalf,
     buf: [u8; 1024],
+    id: usize,
 }
 
 impl<Read> Connection<Read>
@@ -332,3 +354,5 @@ async fn main() {
 
     let _ = service.run().await;
 }
+
+static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
