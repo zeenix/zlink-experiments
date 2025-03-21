@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::atomic::AtomicUsize};
 
 use futures_util::{
     Stream, StreamExt, pin_mut,
-    stream::{Repeat, Take, repeat},
+    stream::{Repeat, SelectAll, Take, repeat, select_all, unfold},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -19,14 +19,28 @@ where
 {
     async fn run(&mut self) {
         let mut write_conn_map = HashMap::new();
+        let mut select_all = SelectAll::new();
 
         // Wait for the first connection.
         let (mut reader, writer) = self.listener.accept_next().await;
+        // TODO: Use `try_unfold` and remove the unwraps.
+        //
+        // OR
+        //
+        // do we even need to propate the errors? Maybe we just log it and return `None`?
+        select_all.push(unfold(&mut reader, |reader| {
+            Box::pin(async {
+                let id = reader.id;
+                let json = reader.read_json_from_socket().await.unwrap();
+                let call: Call<Srv::MethodCall<'_>> = serde_json::from_str(json).unwrap();
+                Some(((call, id), reader))
+            })
+        }));
         write_conn_map.insert(writer.id, writer);
-        loop {
+        /*loop {
             match self
                 .service
-                .handle_next(&mut reader, &mut write_conn_map)
+                .handle_next(&mut select_all, &mut write_conn_map)
                 .await
             {
                 Ok(Some(stream)) => {
@@ -38,7 +52,7 @@ where
                 Ok(None) => (),
                 Err(_) => break,
             }
-        }
+        }*/
     }
 }
 
@@ -55,13 +69,13 @@ where
     where
         Self: 'ser;
 
-    fn handle_next<'de, 'ser, Read, Write>(
+    fn handle_next<'de, 'ser, ReadStream, Write>(
         &'ser mut self,
-        read_conn: &'de mut Connection<Read>,
+        read_stream: &'de mut ReadStream,
         write_conn_map: &mut HashMap<usize, Connection<Write>>,
     ) -> impl Future<Output = Result<Option<Self::ReplyStream>, ()>>
     where
-        Read: ReadHalf,
+        ReadStream: Stream<Item = (Call<Self::MethodCall<'de>>, usize)>,
         Write: WriteHalf,
     {
         async {
